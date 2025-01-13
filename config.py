@@ -59,12 +59,13 @@ def get_args():
     parser.add_argument('--deyo_margin_e0', default=0.4, type=float, help='Entropy margin for sample weighting $\mathrm{Ent}_0$ in Eqn. (10)')
     parser.add_argument('--plpd_threshold', default=0.2, type=float,
                         help='PLPD threshold for sample selection $\tau_\mathrm{PLPD}$ in Eqn. (8)')
-    
+    parser.add_argument('--featmix_threshold', default=0.5, type=float,
+                        help='Feature mixing threshold for sample selection')
     parser.add_argument('--fishers', default=0, type=int)
     parser.add_argument('--filter_ent', default=1, type=int)
     parser.add_argument('--filter_plpd', default=1, type=int)
     parser.add_argument('--reweight_ent', default=1, type=int)
-    parser.add_argument('--reweight_plpd', default=1, type=int)
+    parser.add_argument('--reweight_plpd', default=1, type=float)
 
     parser.add_argument('--topk', default=1000, type=int)
     

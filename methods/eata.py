@@ -43,15 +43,16 @@ class EATA(nn.Module):
         self.args = args
     def forward(self, x):
         if self.args.new_criteria:
-            filter_ids_0 = self.update_method.filter_sample(x, self.args.alpha_cap, self.update_method.anchors, self.update_method.num_sample)
+            filter_ids_0, plpd_gray = self.update_method.filter_sample(x, self.args.alpha_cap, self.update_method.anchors, self.update_method.num_sample)
         else:
             filter_ids_0 = None
+            plpd_gray = None
         
         if self.episodic:
             self.reset()
         if self.steps > 0:
             for _ in range(self.steps):
-                outputs, num_counts_2, num_counts_1, updated_probs = forward_and_adapt_eata(x, self.model, self.optimizer, self.fishers, self.e_margin, self.current_model_probs, fisher_alpha=self.fisher_alpha, num_samples_update=self.num_samples_update_2, d_margin=self.d_margin, filter_ids_0 = filter_ids_0)
+                outputs, num_counts_2, num_counts_1, updated_probs = forward_and_adapt_eata(x, self.model, self.optimizer, self.fishers, self.e_margin, plpd_gray, self.current_model_probs, fisher_alpha=self.fisher_alpha, num_samples_update=self.num_samples_update_2, d_margin=self.d_margin, filter_ids_0 = filter_ids_0)
                 self.num_samples_update_2 += num_counts_2
                 self.num_samples_update_1 += num_counts_1
                 self.reset_model_probs(updated_probs)
@@ -89,6 +90,7 @@ def forward_and_adapt_eata(x,
                            optimizer, 
                            fishers, 
                            e_margin, 
+                           plpd_gray,
                            current_model_probs, 
                            fisher_alpha=50.0, 
                            d_margin=0.05, 
@@ -121,30 +123,44 @@ def forward_and_adapt_eata(x,
     entropys = entropys[filter_ids_0]
     filter_ids_1 = torch.where(entropys < e_margin)
     ids1 = filter_ids_1
-    ids2 = torch.where(ids1[0]>-0.1)
-    
+    ids2 = torch.where(ids1[0] > -0.1)
+    bad = 1 #Using bad samples or not
     entropys = entropys[ids1]
-    
+    # plpd_gray = plpd_gray[ids1]
     # filter redundant samples
     if current_model_probs is not None:
         cosine_similarities = F.cosine_similarity(current_model_probs.unsqueeze(dim=0), outputs[filter_ids_0][filter_ids_1].softmax(1), dim=1)
         filter_ids_2 = torch.where(torch.abs(cosine_similarities) < d_margin)
+        if bad:
+            filter_bad = torch.where(torch.abs(cosine_similarities) >= d_margin)
+            entropys1 = entropys[filter_bad]
         entropys = entropys[filter_ids_2]
+        # plpd_gray = plpd_gray[filter_ids_2]
         ids2 = filter_ids_2
         updated_probs = update_model_probs(current_model_probs, outputs[filter_ids_0][filter_ids_1][filter_ids_2].softmax(1))
     else:
         updated_probs = update_model_probs(current_model_probs, outputs[filter_ids_0][filter_ids_1].softmax(1))
-    coeff = 1 / (torch.exp(entropys.clone().detach() - e_margin))
+    # import pdb; pdb.set_trace()
+    coeff = (1 / (torch.exp(entropys.clone().detach() - e_margin))
+            # + 1 / (torch.exp(-1. * torch.abs(plpd_gray.to('cuda:0').clone().detach())))
+             )
     #"""
     # implementation version 1, compute loss, all samples backward (some unselected are masked)
     entropys = entropys.mul(coeff) # reweight entropy losses for diff. samples
     loss = entropys.mean(0)
+    if current_model_probs is not None:
+        if bad:
+            coeff1 = 0.5 * (1 / (torch.exp(entropys1.clone().detach() - e_margin)))
+            entropys1 = entropys1.mul(coeff1)
+            entropys1 = entropys1.mul(-1)
+            loss1 = entropys1.mean(0)
     """
     # implementation version 2, compute loss, forward all batch, forward and backward selected samples again.
     loss = 0
     if x[ids1][ids2].size(0) != 0:
         loss = softmax_entropy(model(x[ids1][ids2])).mul(coeff).mean(0) # reweight entropy losses for diff. samples
     #"""
+    # import pdb; pdb.set_trace()
     if fishers is not None:
         ewc_loss = 0
         for name, param in model.named_parameters():
@@ -152,6 +168,9 @@ def forward_and_adapt_eata(x,
                 ewc_loss += fisher_alpha * (fishers[name][0] *( param - fishers[name][1])**2).sum()
         loss += ewc_loss
     if x[filter_ids_0][ids1][ids2].size(0) != 0:
+        if current_model_probs is not None:
+            if bad:
+                loss1.backward(retain_graph=True)
         loss.backward()
         optimizer.step()
     optimizer.zero_grad()

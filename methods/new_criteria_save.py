@@ -24,7 +24,8 @@ class Update_method(nn.Module):
         self.anchors, self.pseudo_labels = self.generate_anchor()
         self.eps = args.alpha_cap
         self.num_sample = args.num_sim
-        
+        self.duplicate = args.featmix_threshold
+
     def generate_anchor(self):
         anchors = []
         num_classes = self.model.module.fc.out_features
@@ -87,8 +88,14 @@ class Update_method(nn.Module):
                 grad = self.compute_ulb_grads(ulb_embed, label)
                 alpha = self.calculate_optimum_alpha(eps, anchor, ulb_embed, grad)
                 feature_mix = self.mix_feature(ulb_embed, anchor, alpha)
-                pred = torch.argmax(self.model.module.fc(feature_mix))
-                labels_count[i][pred] += 1
+                #Prediction
+                # pred = torch.argmax(self.model.module.fc(feature_mix))
+                # labels_count[i][pred] += 1
+                #Output vector
+                vector_pred = self.model.module.fc(feature_mix)
+                import pdb; pdb.set_trace()
+                prob_outputs_star = torch.softmax(vector_pred, dim=1)
+
         below_threshold = labels_count < num_sample
         all_below_threshold = torch.all(below_threshold, dim=1)
         return all_below_threshold

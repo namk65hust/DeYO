@@ -26,6 +26,11 @@ elif args.dset == 'Cifar10-C':  # Added handling for CIFAR10-C
     args.data_corruption = os.path.join(args.data_root, 'CIFAR-10-C')
     if not hasattr(args, 'corruption') or not hasattr(args, 'level'):
         raise ValueError("CIFAR10-C requires 'corruption_type' and 'severity' to be specified.")
+#CIFAR100
+elif args.dset == 'Cifar100-C': 
+    args.data_corruption = os.path.join(args.data_root, 'CIFAR-100-C')
+    if not hasattr(args, 'corruption') or not hasattr(args, 'level'):
+        raise ValueError("CIFAR100-C requires 'corruption_type' and 'severity' to be specified.")
 else:
     raise ValueError("Wrong dataset")
 
@@ -55,7 +60,7 @@ import pickle
 from dataset.waterbirds_dataset import WaterbirdsDataset
 from dataset.ColoredMNIST_dataset import ColoredMNIST
 from dataset.cifar_dataset import CIFAR10C
-
+from dataset.cifar100_dataset import CIFAR100C
 from torchvision import datasets, transforms
 
 def validate(val_loader, model, criterion, args):
@@ -185,7 +190,10 @@ if __name__ == "__main__":
     elif args.dset=='Waterbirds' or args.dset=='ColoredMNIST':
         args.num_class = 2
     elif args.dset == "Cifar10-C":
-        args.num_class = 10 
+        args.num_class = 10
+    elif args.dset == "Cifar100-C":
+        args.num_class = 100
+
     print('The number of classes:', args.num_class)
     if args.dset == 'Waterbirds':
         assert biased
@@ -198,6 +206,9 @@ if __name__ == "__main__":
     
     elif args.dset == "Cifar10-C":
         assert args.model == "resnet18_bn"
+
+    elif args.dset == "Cifar100-C":
+        assert args.model == "resnet50_bn_torch"
 
     if biased:
         assert (args.dset == 'Waterbirds' or args.dset == 'ColoredMNIST')
@@ -227,21 +238,21 @@ if __name__ == "__main__":
     logger = get_logger(name="project", output_directory=args.output, log_name=args.logger_name, debug=False) 
     
     common_corruptions = [
-                            # 'gaussian_noise',
+                            'gaussian_noise',
                             'shot_noise',
-                            # 'impulse_noise',
-                            # 'defocus_blur', 
-                            # 'glass_blur', 
-                            # 'motion_blur', 
-                            # 'zoom_blur', 
-                            # 'snow', 
-                            # 'frost', 
-                            # 'fog', 
-                            # 'brightness', 
-                            # 'contrast', 
-                            # 'elastic_transform', 
-                            # 'pixelate', 
-                            # 'jpeg_compression'
+                            'impulse_noise',
+                            'defocus_blur', 
+                            'glass_blur', 
+                            'motion_blur', 
+                            'zoom_blur', 
+                            'snow', 
+                            'frost', 
+                            'fog', 
+                            'brightness', 
+                            'contrast', 
+                            'elastic_transform', 
+                            'pixelate', 
+                            'jpeg_compression'
                             ]
     if biased:
         common_corruptions = ['spurious correlation']
@@ -341,14 +352,27 @@ if __name__ == "__main__":
                 elif args.dset == "Cifar10-C":
                     import torchvision.transforms as transforms
                     kwargs = {'num_workers': args.workers, 'pin_memory': True}
-                    val_dataset = CIFAR10C(root="/mnt/disk2/ducntm/DATA/cifar10_c", 
+                    val_dataset = CIFAR10C(root="./DATA/cifar10_c", 
                                            corruption_type=args.corruption, 
                                            severity=args.level,
-                                           transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                        #    transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                           transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))]))
+                    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.test_batch_size,
+                                                             shuffle=args.if_shuffle, **kwargs)
+                
+                elif args.dset == "Cifar100-C":
+                    import torchvision.transforms as transforms
+                    kwargs = {'num_workers': args.workers, 'pin_memory': True}
+                    val_dataset = CIFAR10C(root="./DATA/cifar100-c", 
+                                           corruption_type=args.corruption, 
+                                           severity=args.level,
+                                        #    transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                           transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2762))]))
                     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.test_batch_size,
                                                              shuffle=args.if_shuffle, **kwargs)
                 else:
                     assert False, NotImplementedError
+
         else:
             assert False, NotImplementedError
         
@@ -368,7 +392,9 @@ if __name__ == "__main__":
                         net = pickle.load(f)
                 elif args.dset == 'ImageNet-C':
                     net = Resnet.__dict__['resnet50'](pretrained=True)
-                
+                elif args.dset == 'Cifar100-C':
+                    with open(args.pretrained_path, 'rb') as f:
+                        net = pickle.load(f)
                 args.lr = (0.00025 / 64) * bs * 2 if bs < 32 else 0.00025
                 args.lr *= args.lr_mul
             
@@ -380,6 +406,9 @@ if __name__ == "__main__":
                     with open(args.pretrained_path, 'rb') as f:
                         net = pickle.load(f)
                         # setattr(net, "fc", net.classifier)
+                elif args.dset == 'Cifar100-C':
+                    with open(args.pretrained_path, 'rb') as f:
+                        net = pickle.load(f)
                 args.lr = (0.00025 / 64) * bs * 2 if bs < 32 else 0.00025
                 args.lr *= args.lr_mul
             else:
@@ -430,10 +459,21 @@ if __name__ == "__main__":
                 elif args.dset == "Cifar10-C":
                     import torchvision.transforms as transforms
                     kwargs = {'num_workers': args.workers, 'pin_memory': True}
-                    fisher_dataset = CIFAR10C(root="/mnt/disk2/ducntm/DATA/cifar10_c", 
+                    fisher_dataset = CIFAR10C(root="./DATA/cifar10_c", 
                                            corruption_type=args.corruption, 
                                            severity=args.level,
-                                           transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                        #    transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                            transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))]))
+                    fisher_loader = torch.utils.data.DataLoader(fisher_dataset, batch_size=args.test_batch_size,
+                                                             shuffle=args.if_shuffle, **kwargs)
+                elif args.dset == "Cifar100-C":
+                    import torchvision.transforms as transforms
+                    kwargs = {'num_workers': args.workers, 'pin_memory': True}
+                    fisher_dataset = CIFAR10C(root="./DATA/cifar100-c", 
+                                           corruption_type=args.corruption, 
+                                           severity=args.level,
+                                        #    transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))]))
+                                            transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2762))]))
                     fisher_loader = torch.utils.data.DataLoader(fisher_dataset, batch_size=args.test_batch_size,
                                                              shuffle=args.if_shuffle, **kwargs)
                 else:

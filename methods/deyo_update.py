@@ -4,7 +4,7 @@ built upon on Tent code.
 """
 
 from copy import deepcopy
-
+import copy
 import torch
 import torch.nn as nn
 import torch.jit
@@ -38,19 +38,20 @@ class DeYO(nn.Module):
         if self.episodic:
             self.reset()
         if self.args.new_criteria:
-            filter_ids_0 = self.update_method.filter_sample(x, self.args.alpha_cap, self.update_method.anchors, self.update_method.num_sample)
+            filter_ids_0, plpd_gray = self.update_method.filter_sample(x, self.args.alpha_cap, self.update_method.anchors, self.update_method.num_sample)
         else:
             filter_ids_0 = None
+            plpd_gray = None
         if targets is None:
             for _ in range(self.steps):
                 if flag:
                     outputs, backward, final_backward = forward_and_adapt_deyo(x, iter_, self.model, self.args,
                                                                               self.optimizer, self.deyo_margin,
-                                                                              self.margin_e0, targets, flag, group, filter_ids_0)
+                                                                              self.margin_e0,plpd_gray, targets, flag, group, filter_ids_0)
                 else:
                     outputs = forward_and_adapt_deyo(x, iter_, self.model, self.args,
                                                     self.optimizer, self.deyo_margin,
-                                                    self.margin_e0, targets, flag, group, filter_ids_0)
+                                                    self.margin_e0,plpd_gray, targets, flag, group, filter_ids_0)
         else:
             for _ in range(self.steps):
                 if flag:
@@ -59,12 +60,14 @@ class DeYO(nn.Module):
                                                                                                     self.optimizer, 
                                                                                                     self.deyo_margin,
                                                                                                     self.margin_e0,
+                                                                                                    plpd_gray,
                                                                                                     targets, flag, group, filter_ids_0)
                 else:
                     outputs = forward_and_adapt_deyo(x, iter_, self.model, 
                                                     self.args, self.optimizer, 
                                                     self.deyo_margin,
                                                     self.margin_e0,
+                                                    plpd_gray,
                                                     targets, flag, group, filter_ids_0)
         if targets is None:
             if flag:
@@ -92,18 +95,30 @@ def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
 @torch.enable_grad()  # ensure grads in possible no grad context for testing
-def forward_and_adapt_deyo(x, iter_, model, args, optimizer, deyo_margin, margin, targets=None, flag=True, group=None, filter_ids_0 = None):
+def forward_and_adapt_deyo(x, iter_, model, args, optimizer, deyo_margin, margin,plpd_gray, targets=None, flag=True, group=None, filter_ids_0 = None):
     """Forward and adapt model input data.
     Measure entropy of the model prediction, take gradients, and update params.
     """
+    embeddings = copy.deepcopy(torch.nn.Sequential(*(list(model.module.children())[:-1])))
     outputs = model(x)
+    
     if not flag:
         return outputs
     
     optimizer.zero_grad()
     entropys = softmax_entropy(outputs)
+
+    #Using bad sample or not
+    bad = 0
+
     if args.new_criteria:
-        entropys = entropys[filter_ids_0]
+        # if bad:
+        #     filter_bad_0 = torch.ones(entropys.size(0), dtype = torch.bool)
+        #     filter_bad_0[filter_ids_0] = False
+        #     entropys1 = entropys[filter_bad_0]
+        # else:
+        #     filter_bad_0 = torch.zeros(entropys.size(0), dtype = torch.bool)
+        entropys = entropys[filter_ids_0]    
     else:
         filter_ids_0 = torch.ones(x.shape[0]) > 0 
     
@@ -140,6 +155,29 @@ def forward_and_adapt_deyo(x, iter_, model, args, optimizer, deyo_margin, margin
         x_prime = rearrange(x_prime, 'b c h w -> b c (h w)')
         x_prime = x_prime[:,:,torch.randperm(x_prime.shape[-1])]
         x_prime = rearrange(x_prime, 'b c (ps1 ps2) -> b c ps1 ps2', ps1=x.shape[-1], ps2=x.shape[-1])
+    
+    #Other option
+    # weights = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, 3, 1, 1).to(x.device)
+    # x_prime = (x * weights).sum(dim=1)
+    # x_prime = x_prime.unsqueeze(1)
+    # x_prime = x_prime.repeat(1,3,1,1)
+
+    #For testing
+    # weights = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, 3, 1, 1).to(x.device)
+    # x_new = (x * weights).sum(dim=1)
+    # x_new = x_new.unsqueeze(1)
+    # x_new = x_new.repeat(1,3,1,1)
+    # with torch.no_grad():
+    #     outputs_new = model(x_new)
+    
+    # prob_outputs = outputs[filter_ids_0][filter_ids_1].softmax(1)
+    # prob_outputs_new = outputs_new.softmax(1)
+    # cls1 = prob_outputs.argmax(dim=1)
+
+    # plpd1 = torch.gather(prob_outputs, dim=1, index=cls1.reshape(-1,1)) - torch.gather(prob_outputs_new, dim=1, index=cls1.reshape(-1,1))
+    # plpd1 = plpd1.reshape(-1)
+    # filter_test = torch.where(plpd1 >= 0.4)
+    
     with torch.no_grad():
         outputs_prime = model(x_prime)
     
@@ -154,8 +192,27 @@ def forward_and_adapt_deyo(x, iter_, model, args, optimizer, deyo_margin, margin
         filter_ids_2 = torch.where(plpd > args.plpd_threshold)
     else:
         filter_ids_2 = torch.where(plpd >= -2.0)
-    entropys = entropys[filter_ids_2]
-    final_backward = len(entropys)
+    
+    if bad:
+        # features = embeddings(x)
+        # features = features.view(features.size(0), -1)
+        filter_bad = torch.where(plpd <= 0.5 * args.plpd_threshold)
+        entropys1 = entropys[filter_bad]
+        plpd1 = plpd[filter_bad]
+        # feature_good = features[filter_ids_0][filter_ids_1][filter_ids_2]
+        # feature_bad = features[filter_ids_0][filter_ids_1][filter_bad]
+        # feature_good = feature_good.view(feature_good.size(0), -1)
+        # feature_bad = feature_bad.view(feature_bad.size(0), -1) 
+        # distances = torch.cdist(feature_bad, feature_good)
+        # nearest_indices = torch.argmin(distances, dim=1)
+        # out_bad = model.module.fc(feature_bad)
+        # out_good = model.module.fc(feature_good[nearest_indices])
+        # # import pdb; pdb.set_trace()
+        # loss_fn = nn.CrossEntropyLoss()
+        # loss2 = loss_fn(out_bad, out_good.argmax(dim=1))   
+    entropys_final = entropys[filter_ids_2]
+    
+    final_backward = len(entropys_final)
     
     if targets is not None:
         corr_pl_1 = (targets[filter_ids_1] == prob_outputs.argmax(dim=1)).sum().item()
@@ -169,24 +226,41 @@ def forward_and_adapt_deyo(x, iter_, model, args, optimizer, deyo_margin, margin
         return outputs, backward, 0
         
     plpd = plpd[filter_ids_2]
-    
+    reweight_new = 1
+    if args.new_criteria:
+        plpd_gray = plpd_gray[filter_ids_0][filter_ids_1][filter_ids_2]
+    else:
+        plpd_gray = torch.zeros(plpd.shape[0])
+        reweight_new = 0
+
     if targets is not None:
         corr_pl_2 = (targets[filter_ids_1][filter_ids_2] == prob_outputs[filter_ids_2].argmax(dim=1)).sum().item()
-
+    # import pdb; pdb.set_trace()
     if args.reweight_ent or args.reweight_plpd:
-        coeff = (args.reweight_ent * (1 / (torch.exp(((entropys.clone().detach()) - margin)))) +
-                 args.reweight_plpd * (1 / (torch.exp(-1. * plpd.clone().detach())))
-                )            
-        entropys = entropys.mul(coeff)
-    loss = entropys.mean(0)
-
+        coeff = (args.reweight_ent * (1 / (torch.exp(((entropys_final.clone().detach()) - margin)))) +
+                 args.reweight_plpd * (1 / (torch.exp(-1. * plpd.clone().detach()))) 
+                #  + (reweight_new * 1 / (torch.exp(-1. * torch.abs(plpd_gray.to('cuda:0').clone().detach()))))
+                 )
+        entropys_final = entropys_final.mul(coeff)
+    loss = entropys_final.mean(0)
+    if bad:
+        coeff1 = 0.5 * (1 / (torch.exp(((entropys1.clone().detach()) - margin))) 
+                # + 1 / (torch.exp(-1. * (args.plpd_threshold/2.0 - plpd1.clone().detach())))
+                )
+        entropys1 = entropys1.mul(coeff1)
+        entropys1 = entropys1.mul(-1)
+        loss1 = entropys1.mean(0)
+    # import pdb; pdb.set_trace()
     if final_backward != 0:
+        if bad:
+            loss1.backward(retain_graph=True)
         loss.backward()
         optimizer.step()
     optimizer.zero_grad()
 
     del x_prime
     del plpd
+    del entropys, coeff, entropys_final, plpd_gray
     
     if targets is not None:
         return outputs, backward, final_backward, corr_pl_1, corr_pl_2

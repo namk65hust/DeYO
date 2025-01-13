@@ -88,6 +88,7 @@ def forward_and_adapt_sar(x, model, optimizer, margin, reset_constant, ema):
         loss = entropys.mean(0)
         loss.backward()
 
+        bad = 1
         optimizer.first_step(zero_grad=True) # compute \hat{\epsilon(\Theta)} for first order approximation, Eqn. (4)
         entropys2 = softmax_entropy(model(x[filter_ids_1])) # second time forward  
         loss_second_value = entropys2.clone().detach().mean(0)
@@ -95,9 +96,17 @@ def forward_and_adapt_sar(x, model, optimizer, margin, reset_constant, ema):
         loss_second = entropys2[filter_ids_2].mean(0)
         if not np.isnan(loss_second.item()):
             ema = update_ema(ema, loss_second.item())  # record moving average loss values for model recovery
-
+        
+        if bad:
+            filter_bad = torch.where(entropys2 > 0.5)
+            entropy_bad = entropys2[filter_bad]
+            coeff = -0.5
+            entropy_bad = entropy_bad.mul(coeff)
+            loss_bad = entropy_bad.mean(0)
         # second time backward, update model weights using gradients at \Theta+\hat{\epsilon(\Theta)}
-        loss_second.backward()
+        loss_second.backward(retain_graph=True)
+        if bad:
+            loss_bad.backward()
         optimizer.second_step(zero_grad=True)
 
     # perform model recovery
